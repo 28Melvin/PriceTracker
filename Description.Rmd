@@ -15,7 +15,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 # Melvin There!
 
-Github: Yet to come\
+Github: [Pricer Tracker Github](https://github.com/28Melvin/PriceTracker)
 Shinyapps.io: [Price Tracker ShinyApp](https://melvin28.shinyapps.io/pricetracker) 
 
 This is/was basically my first RShiny project.So what’s supposed to happen?
