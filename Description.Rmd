@@ -1,0 +1,347 @@
+---
+title: "Price Tracker - Shiny App"
+author: "28Melvin"
+date: "2021/02/01"
+output: 
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+    theme: paper
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Melvin There!
+
+Github: Yet to come\
+Shinyapps.io: [Price Tracker ShinyApp](https://melvin28.shinyapps.io/pricetracker) 
+
+This is/was basically my first RShiny project.So what’s supposed to happen?
+
+The Shiny App offers the user the possibilty to extract the price of either the “IPhone 12 Pro - 256 GB” or “Air Pods mit Ladecase” from the Apple Website (German Site - € Prices) The user can then choose to plot the price development of either product.
+
+General Structure: 
+
+2 .R files
+   - app.R
+   - global.R
+
+1 .Renviron file
+  - .Renviron
+  
+All three files are uploaded to shinyapps.io where the app is pusblished. Data is stored in a remote MySQL database. 
+
+It’s my first app and thus lot’s of issues need to be improved. - prices on the apple website hardly vary over time, thus getting prices from different site might be more interesting - data should only be written to the database once a day, thus not always when a user decides to extract the new price (otherwise there would be quite a lot entries/duplicates in the database if the app WOULD be frequently used)
+
+# The global.R file
+
+As far as I'm concerned when deploying the Shiny App on Shinyapps.io, the global.R file is automatically executed when the app is launched. However only if the "user interface" and the server function are in two separated files. When deploying in a single app.R file, there needs to be the source-Function included. 
+
+
+```{r, eval=FALSE}
+
+# load libraries
+library(xml2)  
+library(rvest)
+library(stringr)
+library(lubridate)
+
+library(ggplot2)
+
+library(RMySQL)
+
+
+# get the prices 
+# two functions - 1. IPhone, 2.AirPods 
+
+
+getIPhone <- function(){
+  
+  getSite_iphone <- read_html("https://www.apple.com/de/shop/buy-iphone/iphone-12-pro/6,1%22-display-256gb-graphit")
+  
+  getPrice <- getSite_iphone %>%
+    html_nodes("span.as-price-currentprice") %>%  #span = tag name, as-price-currentprice = class name
+    html_text()
+  getPrice <- str_remove_all(getPrice, "[\n]") 
+  getPrice <- gsub(" ","", getPrice)
+  getPrice <- gsub(".","",getPrice, fixed=TRUE) #fixed=TRUE so that only the "." is replaced
+  getPrice <- str_replace_all(getPrice, ",\\w+", "") #remove all character after "," included, so that also the "€" sign is removed
+  getPrice <- substr(getPrice, 1,nchar(getPrice)-1)
+  getPrice_iphone <- as.integer(getPrice)
+  
+  
+  
+  return(getPrice_iphone)
+
+}
+
+
+
+getAirPod <- function(){
+  
+  getSite_airpod <- read_html("https://www.apple.com/de/shop/product/MV7N2ZM/A/airpods-mit-ladecase")
+  
+  getPrice <- getSite_airpod %>%
+    html_nodes("span.current_price") %>%
+    html_text()
+  
+  
+  getPrice <- str_remove_all(getPrice, "[\n]") 
+  getPrice <- gsub(" ","", getPrice)
+  getPrice <- str_replace_all(getPrice, ",\\w+", "") #remove all character after "," included
+  getPrice <- substr(getPrice, 1,nchar(getPrice)-1)
+  getPrice_airpod <- as.integer(getPrice)
+  
+  return(getPrice_airpod)
+  
+}
+
+# the function only creates a data.frame that stores the current date, as well as the year
+# later these two values are combined with product name and the price of the product into a data.frame that is finally store in the MySQL database
+getTime <- function(){
+  
+  
+  YearMonthDate <- Sys.Date()
+  Year <- year(YearMonthDate)
+  inputtable <- as.data.frame(cbind(Year,YearMonthDate))
+  inputtable$YearMonthDate <-  as.numeric(inputtable$YearMonthDate)
+  inputtable$YearMonthDate <- format(as.Date(inputtable$YearMonthDate, origin="1970-01-01"), "%Y:%m:%d")
+  
+  return(inputtable)
+  
+  
+}
+
+
+# Database access (save to database and load from database)
+
+table <- "PriceTracker" #name of the table in the database 
+
+
+
+saveData <- function(data){
+  
+  #connect to database
+  
+  db <- dbConnect(MySQL(), dbname = Sys.getenv("databaseName"),  
+                  host = Sys.getenv("host"),  
+                  port = as.integer(Sys.getenv("port")), 
+                  user = Sys.getenv("user"),  
+                  password = Sys.getenv("password"))
+  
+  #######################################################################################
+  # The database credentials are stored in a .Renviron file that was also deployed to 
+  # the shinyapps.io server. 
+  # When testing locally the .Renviron file was project specific -> usethis::edit_r_environ("project") 
+  ##################################
+  
+  
+  # construct update query by looping over the data fields
+  
+  query <- sprintf(
+    "INSERT INTO %s (%s) VALUES ('%s')", 
+    
+    table, # 
+    paste(names(data), collapse = ", "),
+    paste(data, collapse = "', '")    
+    
+  )
+  
+  # Submit the update query and disconnect
+  
+  dbGetQuery(db, query)
+  
+  dbDisconnect(db)
+  
+}
+
+
+loadData <- function(){
+  
+  # connect to the database
+  db <- dbConnect(MySQL(), dbname = Sys.getenv("databaseName"), 
+                  host = Sys.getenv("host"),  
+                  port = as.integer(Sys.getenv("port")), 
+                  user =  Sys.getenv("user"), 
+                  password = Sys.getenv("password")) 
+  
+  # construct the fetching query 
+  
+  query <- sprintf("SELECT * FROM %s", table)
+  
+  # Submit the fetch query and disconnect
+  
+  data <- dbGetQuery(db, query)
+  
+  dbDisconnect(db)
+  
+  
+  return(data)
+  
+}
+
+
+
+# the plot functions - these are later executed once the user in the app hits the "plot button"
+# the data input for the plot functions is the output of the loadData function / the data from the MySQL database 
+
+plotAirPods <- function(input){
+  
+  
+  input1 <- input[which(input[,"ProductName"] == "AirPods mit Ladecase"),]
+  #prepare data
+  ggplot(data = input1, aes(x = YearMonthDate, y = Price, group = 1)) + geom_line()
+  
+  
+}
+
+plotIPhone <- function(input){
+  
+  input1 <- input[which(input[,"ProductName"] == "Apple IPhone 12 Pro 256 GB"),]
+  
+  ggplot(data = input1, aes(x = YearMonthDate, y = Price, group = 1)) + geom_line()
+  
+}
+
+
+```
+
+# The app.R File
+
+
+```{r, eval=FALSE}
+# r-shiny project
+library(shiny) 
+
+source("./global.R") #relative path as otherwise the file cannot be found when deploying to shinyapps.io
+
+
+# Define UI / Layout 
+# fluidpage -> function
+ui <- fluidPage(
+  
+  titlePanel(""),
+  
+
+  
+  sidebarLayout(
+    
+    sidebarPanel("Choose the product you wish to get the price for: ", 
+                 
+                 br(),
+                 br(),
+                 selectInput("productID","Choose product: ", c("Apple IPhone 12 Pro 256 GB", "AirPods mit Ladecase")),
+                 actionButton("getNewPrice", "Load current Price"),
+                 br(),
+                 br(),
+                 actionButton("plotData", "Plot Data"),
+                 br(), 
+                 h1(textOutput("currentPrice"), align = "center")), 
+                 
+               
+    
+    mainPanel(p("Prices (€) over Time", align = "center"), tabsetPanel(type = "tabs", 
+                          tabPanel("IPhone 12 Pro - 256 GB", plotOutput("plotIPhone")),
+                          tabPanel("AirPods mit Ladecase", plotOutput("plotAirPods"))),
+              
+              position = "left" #sidebar position
+              
+         
+        
+  ))
+  
+)
+
+
+# Define server logic required 
+server <- function(input, output) {
+  
+  tableInput <- loadData() #as to my knowledge loading the data at this point, loads the data everytime a user joins the app
+                          #I got to be honest, I don't know if it is better to place it in the global.R app, that is supposed to only run once the app launches (as I have no seperate ui.R and server.R files)
+  
+  # if the user pushes the "Get newest Price" Button - newest price is extracted 
+  # and written to remote database + current price is displayed (however without € sing. 
+  observeEvent(input$plotData, {
+    
+    
+    
+    
+    if(input$productID == "Apple IPhone 12 Pro 256 GB"){
+      
+      output$plotIPhone <- renderPlot(plotIPhone(tableInput))
+      
+    }
+    else
+    {
+    
+     output$plotAirPods <- renderPlot(plotAirPods(tableInput))
+    }
+    
+   # output$datas <- renderTable(tableInput)
+    
+    
+  })
+  
+  
+  
+  observeEvent(input$getNewPrice, {
+    
+    
+    # first we scrape the price from the homepage
+    # thereafter we get the current date and combine these two inputs
+    # the data frame that is then written to the remote database
+    
+    if(input$productID == "Apple IPhone 12 Pro 256 GB"){
+      
+      Price <- getIPhone() # scrape IPhone Price
+      
+    }else{
+      
+      Price <- getAirPod()
+    }
+    
+    times <- getTime() 
+ 
+    ProductName <- input$productID
+    all_frame <- as.data.frame(cbind(ProductName, Price, times))
+    
+    output$currentPrice <- renderText({
+      
+      print(Price)
+      
+    })
+    
+    saveData(all_frame)
+    
+    
+  })
+  
+  
+  
+ 
+  
+}
+
+
+# run the app 
+shinyApp(ui = ui, server = server)
+
+```
+
+# The .Renviron File
+
+The following should be included in the .Renviron file. The .Renviron file should also be uploaded to the shinyapps.io server. 
+When testing the app locally I used the: usethis::edit_r_environ("projects") command to create the .Renviron file. 
+```{r, eval= FALSE}
+
+
+host = put_the_host_here
+port = put_port_here
+user = put_user_here
+password = put_password_here
+databaseName = put_databaseName_here
+table = put_tableName_here
+
+```
